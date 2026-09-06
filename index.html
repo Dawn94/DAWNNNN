@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>俄罗斯方块</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(circle at 50% 0%, #1e293b, #0f172a 70%);
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: var(--text);
+    user-select: none;
+  }
+
+  .wrap {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+    padding: 24px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(10, 1fr);
+    grid-template-rows: repeat(20, 1fr);
+    width: min(60vw, 300px);
+    aspect-ratio: 1 / 2;
+    background: var(--panel);
+    border: 2px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .cell {
+    border: 1px solid rgba(0, 0, 0, 0.18);
+    background: transparent;
+  }
+  .cell.filled { background: #64748b; }
+
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 140px;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .panel h3 {
+    margin: 0 0 10px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+  }
+
+  .next {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+    width: 96px;
+    aspect-ratio: 1;
+    gap: 1px;
+  }
+  .next .cell { border: 1px solid rgba(0,0,0,0.15); }
+
+  .score-value {
+    font-size: 28px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .status {
+    text-align: center;
+    padding: 10px;
+    border-radius: 6px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    background: #334155;
+  }
+  .status.over { background: #7f1d1d; color: #fca5a5; }
+  .status.paused { background: #854d0e; color: #fde68a; }
+
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 10px;
+    margin-top: 8px;
+    border: none;
+    border-radius: 6px;
+    background: #334155;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn:hover { background: #475569; }
+  .btn.primary { background: #2563eb; }
+  .btn.primary:hover { background: #3b82f6; }
+
+  .hint {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.8;
+    margin-top: 10px;
+  }
+  .hint b { color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="board" id="board"></div>
+
+  <div class="side">
+    <div class="panel">
+      <h3>下一个</h3>
+      <div class="next" id="next"></div>
+    </div>
+
+    <div class="panel">
+      <h3>分数</h3>
+      <div class="score-value" id="score">0</div>
+      <div class="hint">消除行数：<span id="lines">0</span></div>
+    </div>
+
+    <div class="status" id="status">进行中</div>
+
+    <div>
+      <button class="btn primary" id="btnStart">开始 / 重新开始</button>
+      <button class="btn" id="btnPause">暂停</button>
+    </div>
+
+    <div class="hint">
+      <b>← →</b> 左右移动<br>
+      <b>↑</b> 旋转 &nbsp; <b>↓</b> 加速下落<br>
+      <b>空格</b> 直接落底 &nbsp; <b>P</b> 暂停
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const COLS = 10, ROWS = 20;
+  const boardEl = document.getElementById('board');
+  const nextEl = document.getElementById('next');
+  const scoreEl = document.getElementById('score');
+  const linesEl = document.getElementById('lines');
+  const statusEl = document.getElementById('status');
+  const btnStart = document.getElementById('btnStart');
+  const btnPause = document.getElementById('btnPause');
+
+  // 方块形状（含旋转状态）
+  const SHAPES = {
+    I: [[1,1,1,1]],
+    O: [[1,1],[1,1]],
+    T: [[0,1,0],[1,1,1]],
+    S: [[0,1,1],[1,1,0]],
+    Z: [[1,1,0],[0,1,1]],
+    J: [[1,0,0],[1,1,1]],
+    L: [[0,0,1],[1,1,1]],
+  };
+  const NAMES = Object.keys(SHAPES);
+
+  let board, score, lines, current, next, timer, running, gameOver, paused;
+
+  function emptyBoard() {
+    return Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+  }
+
+  function randomPiece() {
+    const name = NAMES[Math.floor(Math.random() * NAMES.length)];
+    const shape = SHAPES[name].map(r => r.slice());
+    return {
+      name,
+      shape,
+      x: Math.floor((COLS - shape[0].length) / 2),
+      y: 0,
+    };
+  }
+
+  function rotate(shape) {
+    // 顺时针旋转 90°
+    const h = shape.length, w = shape[0].length;
+    const res = Array.from({ length: w }, () => Array(h).fill(0));
+    for (let r = 0; r < h; r++)
+      for (let c = 0; c < w; c++)
+        res[c][h - 1 - r] = shape[r][c];
+    return res;
+  }
+
+  function collides(piece, board) {
+    for (let r = 0; r < piece.shape.length; r++)
+      for (let c = 0; c < piece.shape[r].length; c++) {
+        if (!piece.shape[r][c]) continue;
+        const x = piece.x + c, y = piece.y + r;
+        if (x < 0 || x >= COLS || y >= ROWS) return true;
+        if (y >= 0 && board[y][x]) return true;
+      }
+    return false;
+  }
+
+  function merge(piece) {
+    for (let r = 0; r < piece.shape.length; r++)
+      for (let c = 0; c < piece.shape[r].length; c++) {
+        if (!piece.shape[r][c]) continue;
+        const y = piece.y + r, x = piece.x + c;
+        if (y >= 0) board[y][x] = 1;
+      }
+  }
+
+  function clearLines() {
+    let cleared = 0;
+    for (let r = ROWS - 1; r >= 0; r--) {
+      if (board[r].every(v => v)) {
+        board.splice(r, 1);
+        board.unshift(Array(COLS).fill(0));
+        cleared++;
+        r++; // 检查同一行
+      }
+    }
+    if (cleared) {
+      const points = [0, 100, 300, 500, 800][cleared] || 800;
+      score += points;
+      lines += cleared;
+    }
+  }
+
+  function spawn() {
+    current = next;
+    next = randomPiece();
+    if (collides(current, board)) {
+      gameOver = true;
+      stop();
+      statusEl.textContent = '游戏结束';
+      statusEl.className = 'status over';
+    }
+  }
+
+  function lock() {
+    merge(current);
+    clearLines();
+    spawn();
+    render();
+  }
+
+  function move(dx) {
+    if (!running || gameOver) return;
+    current.x += dx;
+    if (collides(current, board)) current.x -= dx;
+    else render();
+  }
+
+  function drop() {
+    if (!running || gameOver) return;
+    current.y += 1;
+    if (collides(current, board)) {
+      current.y -= 1;
+      lock();
+    }
+    render();
+  }
+
+  function hardDrop() {
+    if (!running || gameOver) return;
+    while (!collides({ ...current, y: current.y + 1 }, board)) current.y++;
+    lock();
+    render();
+  }
+
+  function tryRotate() {
+    if (!running || gameOver) return;
+    const rotated = rotate(current.shape);
+    const test = { ...current, shape: rotated };
+    // 简单踢墙：尝试左/右偏移
+    for (const dx of [0, -1, 1, -2, 2]) {
+      test.x = current.x + dx;
+      if (!collides(test, board)) {
+        current.shape = rotated;
+        current.x = test.x;
+        render();
+        return;
+      }
+    }
+  }
+
+  function render() {
+    boardEl.innerHTML = '';
+    const grid = board.map(row => row.slice());
+    if (current && !gameOver) {
+      for (let r = 0; r < current.shape.length; r++)
+        for (let c = 0; c < current.shape[r].length; c++) {
+          if (!current.shape[r][c]) continue;
+          const y = current.y + r, x = current.x + c;
+          if (y >= 0 && y < ROWS) grid[y][x] = 1;
+        }
+    }
+    for (let r = 0; r < ROWS; r++)
+      for (let c = 0; c < COLS; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell' + (grid[r][c] ? ' filled' : '');
+        boardEl.appendChild(cell);
+      }
+
+    nextEl.innerHTML = '';
+    const offX = Math.floor((4 - next.shape[0].length) / 2);
+    const offY = Math.floor((4 - next.shape.length) / 2);
+    for (let r = 0; r < 4; r++)
+      for (let c = 0; c < 4; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        const pr = r - offY, pc = c - offX;
+        if (pr >= 0 && pr < next.shape.length && pc >= 0 && pc < next.shape[0].length && next.shape[pr][pc])
+          cell.classList.add('filled');
+        nextEl.appendChild(cell);
+      }
+
+    scoreEl.textContent = score;
+    linesEl.textContent = lines;
+  }
+
+  function start() {
+    board = emptyBoard();
+    score = 0;
+    lines = 0;
+    gameOver = false;
+    paused = false;
+    next = randomPiece();
+    spawn();
+    statusEl.textContent = '进行中';
+    statusEl.className = 'status';
+    render();
+    startTimer();
+  }
+
+  function startTimer() {
+    stop();
+    timer = setInterval(drop, 800);
+  }
+
+  function stop() {
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  function togglePause() {
+    if (gameOver || !running) return;
+    paused = !paused;
+    if (paused) {
+      stop();
+      statusEl.textContent = '已暂停';
+      statusEl.className = 'status paused';
+    } else {
+      startTimer();
+      statusEl.textContent = '进行中';
+      statusEl.className = 'status';
+    }
+  }
+
+  btnStart.addEventListener('click', () => { running = true; start(); });
+  btnPause.addEventListener('click', togglePause);
+
+  document.addEventListener('keydown', e => {
+    const key = e.key;
+    if (['ArrowLeft','ArrowRight','ArrowDown','ArrowUp',' '].includes(key)) e.preventDefault();
+    if (key === 'ArrowLeft') move(-1);
+    else if (key === 'ArrowRight') move(1);
+    else if (key === 'ArrowDown') drop();
+    else if (key === 'ArrowUp') tryRotate();
+    else if (key === ' ') hardDrop();
+    else if (key === 'p' || key === 'P') togglePause();
+  });
+
+  // 初始渲染
+  board = emptyBoard();
+  next = randomPiece();
+  score = 0; lines = 0;
+  gameOver = false; paused = false; running = false;
+  render();
+  statusEl.textContent = '点击开始';
+})();
+</script>
+</body>
+</html>
